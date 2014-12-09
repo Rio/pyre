@@ -9,5 +9,5 @@ setup(
         url='http://www.github.com/zeromq/pyre/',
         packages=['pyre'],
         include_package_data=True,
-        requires=['pyzmq', 'ipaddress']
+        requires=['pyzmq', 'ipaddress', 'netifaces']
 )
