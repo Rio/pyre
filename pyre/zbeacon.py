@@ -32,6 +32,8 @@ import sys
 from sys import platform
 import logging
 
+import netifaces
+
 # local modules
 from . import zhelper
 
@@ -141,63 +143,77 @@ class ZBeaconAgent(object):
         # Our interface name
         self.interface_name = None
 
-        self.announce_address = ipaddress.IPv4Address(announce_addr)
+        self.announce_address = ipaddress.ip_address(announce_addr)
         # find a non local ipaddress 
         # TODO: only choose highest available ipaddress
-        netinf = zhelper.get_ifaddrs()
 
-        logger.debug("Available interfaces: {0}".format(netinf))
+        interfaces = netifaces.interfaces()
+        # TODO: sort the interfaces by preference like eth*, wlan* etc. Maybe even optionally let the user give the interface.
 
-        for iface in netinf:
+        logger.debug("Available interfaces: {0}".format(interfaces))
+
+        for interface_name in interfaces:
             # Loop over the interfaces and their settings to try to find the broadcast address.
             # ipv4 only currently and needs a valid broadcast address
-            for name, data in iface.items():
-                logger.debug("Checking out interface {0}.".format(name))
-                # For some reason the data we need lives in the "2" section of the interface.
-                data_2 = data.get(2)
+            logger.debug("Checking out interface {0}.".format(interface_name))
 
-                if not data_2:
-                    logger.debug("No data_2 found for interface {0}.".format(name))
-                    continue
+            # Grab all the settings for this interface.
+            interface_settings = netifaces.ifaddresses(interface_name)
 
-                address_str = data_2.get("addr")
-                netmask_str = data_2.get("netmask")
+            # Grab all the assigned IPv4 addresses for that interface
+            inet_addresses = interface_settings.get(netifaces.AF_INET) 
 
-                if not address_str or not netmask_str:
-                    logger.debug("Address or netmask not found for interface {0}.".format(name))
-                    continue
+            if not inet_addresses:
+                logger.debug("No addresses found for interface {0}.".format(interface_name))
+                continue
 
-                if isinstance(address_str, bytes):
-                    address_str = address_str.decode("utf8")
+            # Loop over all the address sets to try to get one with an address and netmask
+            address_str = None
+            netmask_str = None
 
-                if isinstance(netmask_str, bytes):
-                    netmask_str = netmask_str.decode("utf8")
+            for address_set in inet_addresses:
+                if "addr" in address_set.keys() and "netmask" in address_set.keys():
+                    address_str = address_set.get("addr")
+                    netmask_str = address_set.get("netmask")
+                    break
 
-                interface_string = "{0}/{1}".format(address_str, netmask_str)
+            if not address_str or not netmask_str:
+                logger.debug("Address or netmask not found for interface {0}.".format(interface_name))
+                continue
 
-                interface = ipaddress.ip_interface(interface_string)
+            # Do some type casting to ensure it is all unicode
+            if isinstance(address_str, bytes):
+                address_str = address_str.decode("utf8")
 
-                if interface.is_loopback:
-                    logger.debug("Interface {0} is a loopback device.".format(name))
-                    continue
+            if isinstance(netmask_str, bytes):
+                netmask_str = netmask_str.decode("utf8")
 
-                self.address = interface.ip
-                self.network_address = interface.network.network_address
-                self.broadcast_address = interface.network.broadcast_address
-                self.interface_name = name
+            # Create an interface object
+            interface_string = "{0}/{1}".format(address_str, netmask_str)
+            interface = ipaddress.ip_interface(interface_string)
 
-                logger.debug("Address: {0}".format(self.address))
-                logger.debug("Network: {0}".format(self.network_address))
-                logger.debug("Broadcast: {0}".format(self.broadcast_address))
-                logger.debug("Interface name: {0}".format(self.interface_name))
+            # Check if it is a loopback device and skip the interface if it is.
+            if interface.is_loopback:
+                logger.debug("Interface {0} is a loopback device.".format(interface_name))
+                continue
 
-            if self.address:
-                break
+            # Otherwise all is good, grab the needed information and break
+            self.address = interface.ip
+            self.network_address = interface.network.network_address
+            self.broadcast_address = interface.network.broadcast_address
+            self.interface_name = interface_name
+
+            logger.debug("Address: {0}".format(self.address))
+            logger.debug("Network: {0}".format(self.network_address))
+            logger.debug("Broadcast: {0}".format(self.broadcast_address))
+            logger.debug("Interface name: {0}".format(self.interface_name))
+            break
 
         logger.debug("Finished scanning interfaces.")
 
         if not self.address:
             logger.error("No suitable interface found.")
+            # TODO: error out when there is not a usable interface found. But my guess is to just use the loopback device then.
 
         self._init_socket()
         self._pipe.send_unicode(str(self.address))
